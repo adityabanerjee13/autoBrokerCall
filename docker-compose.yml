@@ -1,0 +1,145 @@
+# brokerAgent, fully containerised.
+#
+#   docker compose up -d --build          bring up mongo + api + web
+#   docker compose run --rm seed          populate the five collections
+#   open http://localhost:5173
+#
+# Real phone calls instead of the scripted lead:
+#   Dograh runs the call. Fill in DOGRAH_API_KEY, DOGRAH_WORKFLOW_UUID and
+#   DOGRAH_SHARED_SECRET in backend/.env, set CALL_TRANSPORT=dograh, then
+#     docker compose run --rm check-dograh +91XXXXXXXXXX
+#   VoBiz and Azure Speech are configured inside Dograh, not here.
+
+services:
+  mongo:
+    image: mongo:7
+    container_name: brokeragent-mongo
+    restart: unless-stopped
+    ports:
+      - "27017:27017"          # exposed only so you can inspect it with a GUI
+    volumes:
+      - brokeragent-mongo-data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  api:
+    build:
+      context: ./backend
+    image: brokeragent-api
+    container_name: brokeragent-api
+    restart: unless-stopped
+    env_file:
+      - ./backend/.env
+    environment:
+      # These override whatever backend/.env says, because inside the network
+      # the database is a service name and the frontend is a different origin.
+      MONGO_URI: mongodb://mongo:27017
+      CORS_ORIGINS: '["http://localhost:5173","http://localhost","http://127.0.0.1:5173"]'
+    depends_on:
+      mongo:
+        condition: service_healthy
+    ports:
+      - "8000:8000"            # direct API access; the UI does not need this
+
+  web:
+    build:
+      context: ./frontend
+    image: brokeragent-web
+    container_name: brokeragent-web
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+    ports:
+      - "5173:80"              # same port as `npm run dev`, so links keep working
+
+  # One-shot: `docker compose run --rm seed`. Never starts with `up`.
+  # seed/ is bind-mounted so editing the dataset does not need an image rebuild.
+  # The api image still carries its own baked copy - this mount only affects
+  # this one-shot container.
+  seed:
+    image: brokeragent-api
+    profiles: ["tools"]
+    volumes:
+      - ./backend/seed:/app/seed:ro
+    env_file:
+      - ./backend/.env
+    environment:
+      MONGO_URI: mongodb://mongo:27017
+    depends_on:
+      mongo:
+        condition: service_healthy
+    command: ["python", "seed/seed_demo.py"]
+
+  # One-shot diagnostics, same image: `docker compose run --rm check-azure`
+  check-azure:
+    image: brokeragent-api
+    profiles: ["tools"]
+    env_file:
+      - ./backend/.env
+    environment:
+      MONGO_URI: mongodb://mongo:27017
+    command: ["python", "scripts/check_azure.py"]
+
+  # Create brokerAgent's seven tools inside Dograh, from the same schemas the
+  # scripted runner uses. Dry run by default:
+  #   docker compose run --rm provision-dograh
+  #   docker compose run --rm provision-dograh --apply
+  provision-dograh:
+    image: brokeragent-api
+    profiles: ["tools"]
+    env_file:
+      - ./backend/.env
+    environment:
+      MONGO_URI: mongodb://mongo:27017
+    entrypoint: ["python", "scripts/provision_dograh.py"]
+
+  # Push config/dograh_prompt.txt into the workflow's conversation node, and
+  # optionally publish it. An API-triggered call runs the PUBLISHED version:
+  #   docker compose run --rm apply-prompt
+  #   docker compose run --rm apply-prompt --apply --publish
+  apply-prompt:
+    image: brokeragent-api
+    profiles: ["tools"]
+    env_file:
+      - ./backend/.env
+    environment:
+      MONGO_URI: mongodb://mongo:27017
+    entrypoint: ["python", "scripts/apply_dograh_prompt.py"]
+
+  # Dograh: the API key, the workflow, that a telephony configuration exists,
+  # and that our own tool endpoint refuses strangers. Pass a number to place a
+  # real test call:
+  #   docker compose run --rm check-dograh +91XXXXXXXXXX
+  check-dograh:
+    image: brokeragent-api
+    profiles: ["tools"]
+    env_file:
+      - ./backend/.env
+    environment:
+      MONGO_URI: mongodb://mongo:27017
+    entrypoint: ["python", "scripts/check_dograh.py"]
+
+  # `docker compose run --rm test`. tests/ is excluded from the image (it has no
+  # business in a runtime image), so it is bind-mounted in for the run.
+  test:
+    image: brokeragent-api
+    profiles: ["tools"]
+    volumes:
+      - ./backend/tests:/app/tests:ro
+      - ./backend/pytest.ini:/app/pytest.ini:ro
+    env_file:
+      - ./backend/.env
+    environment:
+      MONGO_URI: mongodb://mongo:27017
+    depends_on:
+      mongo:
+        condition: service_healthy
+    command: ["python", "-m", "pytest", "-q"]
+
+volumes:
+  brokeragent-mongo-data:

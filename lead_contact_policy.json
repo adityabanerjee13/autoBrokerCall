@@ -1,0 +1,125 @@
+{
+  "status_rules": {
+    "New": {
+      "definition": "Captured but never contacted. Most fields are empty and no property has been liked or shown.",
+      "expected_populated_fields": ["lead_id", "created_at", "lead_source", "at least one of: phone, email"],
+      "must_be_empty": ["liked_property_ids", "shown_property_ids", "showings_count", "first_contact_date", "last_contact_date"],
+      "agent_actions": [
+        "Contact within the first_response_sla.",
+        "Goal of the first call is identification, not qualification: confirm the name, confirm they made the enquiry, and establish lead_type.",
+        "Do not pitch inventory before lead_type is known.",
+        "Never schedule a site visit on a lead whose lead_type is still blank."
+      ],
+      "handling_sparse_records": "If only a phone number exists, open by naming the source ('you enquired on 99acres about a property in Sector 82'). If the source is a chatbot or an illegible sign-in and nothing can be confirmed, ask a single open question and let them lead.",
+      "transitions_to": ["Attempted Contact", "Contacted", "Unqualified"]
+    },
+    "Contacted": {
+      "definition": "Two-way conversation established, qualification incomplete.",
+      "agent_actions": [
+        "Complete the required_fields for the lead_type before proposing any property.",
+        "Set next_followup_date on every call, agreed with the lead."
+      ],
+      "transitions_to": ["Qualified", "Nurture", "Unqualified"]
+    },
+    "Qualified": {
+      "definition": "Required fields captured and the requirement is within our service area and inventory.",
+      "agent_actions": [
+        "Share a shortlist matched to preferred_areas, property_type and budget range.",
+        "Record every property the lead reacts positively to in liked_property_ids.",
+        "Propose a site visit only for properties confirmed available that week."
+      ],
+      "transitions_to": ["Appointment Set", "Active - Showing", "Nurture"]
+    }
+  },
+  "lead_type_policies": {
+    "Buyer": {
+      "objective": "Understand the requirement and financial readiness before showing anything.",
+      "required_fields": ["budget_min", "budget_max", "preferred_areas", "property_type"],
+      "qualification_questions": [
+        "Which locations are you looking at, and is there a commute or school that anchors you there?",
+        "What budget range are you working with, all-in?",
+        "Is this a self-use purchase or an investment?",
+        "Are you funding this through a home loan or own funds?",
+        "Are you currently renting, or do you need to sell something first?",
+        "What is your realistic timeline to close?"
+      ],
+      "permitted": [
+        "Explaining project approvals, RERA registration status, carpet vs super built-up area, and possession timelines, where verified.",
+        "Introducing a lender only after asking permission to share their contact details."
+      ],
+      "prohibited": [
+        "Quoting an EMI, loan eligibility or interest rate as advice.",
+        "Advising on stamp duty or tax treatment.",
+        "Showing a property outside the recorded budget range without the lead's consent to look higher.",
+        "Pressuring a first-time buyer to pay a token amount on a first visit."
+      ],
+      "cadence": "Twice weekly while Active - Showing; weekly while Qualified; monthly in Nurture.",
+      "escalate_if": ["Lead asks to structure the deal partly in cash", "Lead is buying on behalf of an undisclosed third party"]
+    },
+
+    "Seller": {
+      "objective": "Establish the property, the motivation, and whether the price expectation is achievable.",
+      "required_fields": ["subject_property_address", "estimated_home_value", "property_condition"],
+      "qualification_questions": [
+        "Where is the property and what is the configuration?",
+        "Is the title clear, and are the approvals and society NOC in order?",
+        "Is it self-occupied, tenanted or vacant?",
+        "What price are you expecting, and how did you arrive at it?",
+        "Is the property currently listed with anyone else?",
+        "By when do you need to conclude the sale?"
+      ],
+      "permitted": [
+        "Presenting a comparative market analysis with the actual comparables it was built from.",
+        "Telling a seller honestly that their expectation is above market, with evidence."
+      ],
+      "prohibited": [
+        "Inflating an indicative valuation to win the mandate.",
+        "Listing or advertising a property before a signed mandate is in hand.",
+        "Marketing a property already under an exclusive mandate with another firm.",
+        "Accepting a mandate without sighting ownership documents."
+      ],
+      "cadence": "Weekly market and enquiry update while the property is live. Never go silent on a listed seller for more than 10 days.",
+      "escalate_if": ["Ownership is disputed or the seller cannot produce title documents", "Property is subject to litigation, an unresolved loan, or an inheritance dispute"]
+    },
+
+    "Renter": {
+      "objective": "Match quickly. Rental leads move fast and go cold faster.",
+      "required_fields": ["budget_min", "budget_max", "preferred_areas", "property_type"],
+      "budget_note": "budget_min and budget_max on a Renter record are MONTHLY rent in INR, not a purchase price. Never render them with sale formatting.",
+      "qualification_questions": [
+        "What is your monthly budget, and does that include or exclude maintenance?",
+        "When does your current lease end or when do you need possession?",
+        "How many occupants, and are there pets?",
+        "Furnished, semi-furnished or unfurnished?",
+        "Which localities work for your commute?"
+      ],
+      "permitted": [
+        "Explaining standard deposit norms, lock-in periods, and maintenance liability for the locality.",
+        "Setting expectations honestly where a society or owner has restrictions we must disclose."
+      ],
+      "prohibited": [
+        "Passing on or acting upon an owner's discriminatory preference regarding religion, caste, community, marital status, food habits or region of origin. Decline the mandate instead.",
+        "Collecting a token or deposit before the owner has confirmed availability in writing.",
+        "Charging the tenant a fee not disclosed at the first showing."
+      ],
+      "cadence": "Every 2-3 days until placed. Rental urgency is real and follow-up gaps lose the deal.",
+      "escalate_if": ["Owner insists on a discriminatory tenant filter", "Owner asks for rent partly in cash"]
+    },
+
+    "Unclassified": {
+      "definition": "lead_type is blank. Applies to most New records, including chatbot and sign-in captures with only a phone number.",
+      "objective": "Establish identity and intent. Nothing else.",
+      "required_fields": [],
+      "agent_actions": [
+        "Open by naming the source and the enquiry so the lead can place the call.",
+        "Ask one open question: whether they are looking to buy, rent, sell or invest.",
+        "Set lead_type before any other field is filled.",
+        "If two contact attempts establish nothing, move to Attempted Contact cadence. Do not guess a lead_type and start pitching."
+      ],
+      "prohibited": [
+        "Pitching inventory to a lead whose intent is unknown.",
+        "Adding an unclassified lead to any marketing campaign."
+      ]
+    }
+  }
+}

@@ -1,0 +1,58 @@
+{
+  "name": "happy_path",
+  "description": "Renter qualifies fully and agrees a viewing. Reaches Qualified / Appointment Set.",
+  "lead_ids": ["LD-0001", "LD-0002", "LD-0003", "LD-0005", "LD-0006", "LD-0007", "LD-0008"],
+  "opening": "Hello, am I speaking with the person enquiring about a rental in Gurugram? This is Asha calling from the rentals team.",
+  "turns": [
+    {
+      "lead": "Yes that's me. I was expecting a call.",
+      "agent": "Thank you for taking the call. So I can shortlist properly, what monthly budget are you working with?",
+      "tools": []
+    },
+    {
+      "lead": "We're looking at about forty five thousand up to sixty thousand a month, not more than that.",
+      "agent": "Understood, forty five to sixty thousand a month. And which areas work for you?",
+      "tools": [
+        {"name": "capture_field", "args": {"field": "monthly_rent_min", "value": 45000}},
+        {"name": "capture_field", "args": {"field": "monthly_rent_max", "value": 60000}}
+      ]
+    },
+    {
+      "lead": "Sector 82 mainly, Sector 84 would also be fine. We need three bedrooms, semi furnished is enough.",
+      "agent": "Noted. Let me see what I have available for you.",
+      "tools": [
+        {"name": "capture_field", "args": {"field": "preferred_areas", "value": ["Sector 82", "Sector 84"]}},
+        {"name": "capture_field", "args": {"field": "bhk_config", "value": "3BHK"}},
+        {"name": "capture_field", "args": {"field": "furnishing", "value": "semi"}}
+      ]
+    },
+    {
+      "lead": "Sure, what do you have?",
+      "agent": "I have a three bedroom at A-702, Palm Grove Heights in Sector 82. Semi furnished, forty seven thousand a month, deposit is two months. Pets are allowed there with a society NOC.",
+      "tools": [
+        {"name": "search_properties", "args": {"areas": ["Sector 82", "Sector 84"], "rent_min": 45000, "rent_max": 60000, "bhk": "3BHK"}},
+        {"name": "present_property", "args": {"property_id": "PR-4425"}}
+      ]
+    },
+    {
+      "lead": "That sounds about right. What is the maintenance like, is it heavy?",
+      "agent": "I don't have the maintenance figure confirmed for that tower, so I won't guess. I'll check with the owner and come back to you on it.",
+      "tools": []
+    },
+    {
+      "lead": "Fair enough. Can we see it this Saturday morning?",
+      "agent": "Yes, Saturday at eleven works. I'll book that in for you now.",
+      "tools": [
+        {"name": "book_appointment", "args": {"property_id": "PR-4425", "when": "2026-09-12T11:00:00+05:30"}}
+      ]
+    },
+    {
+      "lead": "Perfect. Send me the address on WhatsApp please.",
+      "agent": "I'll send you the details and the exact location after this call. Thank you for your time, I'll see you on Saturday.",
+      "tools": [
+        {"name": "note_memory", "args": {"kind": "preference", "text": "Prefers weekend morning viewings and wants details on WhatsApp."}},
+        {"name": "end_call", "args": {"disposition": "viewing_booked"}}
+      ]
+    }
+  ]
+}
