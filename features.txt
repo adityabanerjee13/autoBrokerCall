@@ -1,0 +1,16 @@
+Voice Agent(Dograh)
+- Dograh integration- using http endpoints for various calls
+- 7 tools for voice agent.
+- end_call tool modification
+- azure AI integration
+
+Analysis
+- what are the rubrics used for the Analysis?
+
+Memory compression
+- what does memory compactor do?
+- How does it help future calls?
+- What other metrics can be added to this stage in the future?
+
+Outbound
+- What is the purpose of this module?

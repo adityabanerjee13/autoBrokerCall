@@ -15,3 +15,9 @@ frontend/dist/
 # Editors / OS
 .DS_Store
 *.log
+
+# Demo recordings - hundreds of MB each; the Drive links live in Demos/*/videoLink.md
+*.mp4
+*.mov
+*.mkv
+*.webm
