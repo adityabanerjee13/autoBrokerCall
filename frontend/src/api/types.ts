@@ -176,3 +176,78 @@ export type NewLead = {
 };
 
 export type NewLeadResponse = { lead_id: string; lead_status: string };
+
+// The manager's full view of one call: the evidence beside the verdict.
+export type TurnSignal = {
+  idx: number;
+  role: string;
+  text: string;
+  at_ms: number;
+  speaking_ms: number;
+  gap_ms: number | null;
+  is_agent_latency: boolean;
+  dead_air: boolean;
+  flagged: boolean;
+  flag_reason: string | null;
+  is_handoff: boolean;
+};
+
+export type ToolTrace = {
+  name: string;
+  args: Record<string, unknown>;
+  allowed: boolean;
+  reason: string | null;
+  at_ms: number;
+};
+
+export type MemoryEntryView = {
+  kind: string;
+  text: string;
+  created_at: string | null;
+};
+
+export type ProviderTrace = {
+  transport: string;
+  run_id: number | null;
+  trace_url: string | null;
+  recording_url: string | null;
+  disposition: string | null;
+  call_status: string | null;
+};
+
+export type CallTrace = {
+  call_id: string;
+  lead_id: string;
+  lead_name: string;
+  lead_type: LeadType;
+  status: string;
+  started_at: string;
+  ended_at: string | null;
+  duration_s: number | null;
+  metrics: {
+    agent_talk_ratio: number;
+    avg_latency_ms: number;
+    dead_air_events: number;
+    turn_count: number;
+  };
+  turns: TurnSignal[];
+  tools: ToolTrace[];
+  analysis: CallDetail["analysis"];
+  escalated: boolean;
+  escalation_reason: string | null;
+  escalated_at: string | null;
+  memory_written: MemoryEntryView[];
+  memory_version: number | null;
+  provider: ProviderTrace;
+  message_id: string | null;
+};
+
+// What an owner is told about their own property. Anonymous by construction -
+// there is no field here that could carry a renter's identity.
+export type OwnerNotification = {
+  event: "shown" | "viewing_booked";
+  property_id: string;
+  address: string;
+  at: string;
+  detail: string;
+};

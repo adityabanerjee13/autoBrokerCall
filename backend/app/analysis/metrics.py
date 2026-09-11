@@ -44,3 +44,46 @@ def compute(transcript: list[dict]) -> dict:
         "dead_air_events": dead_air,
         "turn_count": len(turns),
     }
+
+
+def signals(transcript: list[dict]) -> list[dict]:
+    """The same arithmetic as compute(), kept per turn instead of aggregated.
+
+    The manager drill-down needs to show *where* the latency and the dead air
+    were, not just their averages. Deriving both from one function is what stops
+    the detail view and the summary row disagreeing - which is exactly the kind
+    of discrepancy that makes a reviewer stop trusting the whole dashboard.
+    """
+    if not transcript:
+        return []
+
+    turns = sorted(transcript, key=lambda t: t["idx"])
+    out: list[dict] = []
+    prev: dict | None = None
+
+    for turn in turns:
+        gap: int | None = None
+        if prev is not None:
+            gap = max(0, int(turn["at_ms"] - prev["at_ms"] - speaking_ms(prev["text"])))
+
+        out.append(
+            {
+                "idx": turn["idx"],
+                "role": turn["role"],
+                "text": turn["text"],
+                "at_ms": turn["at_ms"],
+                # The gap before this turn. None on the first turn, because
+                # there is nothing to have waited for.
+                "gap_ms": gap,
+                # Only a lead->agent gap is the agent being slow. An agent->lead
+                # gap is a person thinking, which is not a performance problem.
+                "is_agent_latency": bool(
+                    prev is not None and prev["role"] == "lead" and turn["role"] == "agent"
+                ),
+                "dead_air": bool(gap is not None and gap > DEAD_AIR_MS),
+                "speaking_ms": int(speaking_ms(turn["text"])),
+            }
+        )
+        prev = turn
+
+    return out

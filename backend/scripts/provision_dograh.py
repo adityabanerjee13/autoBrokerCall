@@ -11,9 +11,18 @@ uses, so the two can never drift.
 
 Re-running is safe: a tool whose name already exists is updated, not duplicated.
 
-What this does NOT do, because Dograh has no API for it: attach the tools to
-your conversation nodes. Do that last, in the workflow editor - a tool that
-exists but is unattached is invisible to the agent, with no error anywhere.
+`end_call` is the exception to all of this. It is provisioned as Dograh's own
+end-call tool rather than an HTTP one, because hanging up is something only the
+orchestrator can do - an HTTP tool that says "the call is over" is just an HTTP
+request, and the line stays open. The reason the model gives becomes the call
+disposition, which reaches this app through the completion webhook.
+
+    python scripts/provision_dograh.py --apply --attach --publish
+
+`--attach` points the conversation node at every tool by name and publishes, so
+a tool that had to be deleted and recreated - which changes its uuid - does not
+silently fall off the node. A tool that exists but is unattached is invisible to
+the agent, with no error anywhere.
 """
 import asyncio
 import json
@@ -74,10 +83,47 @@ def _json_type(spec: dict) -> str:
     return "string"
 
 
+def build_end_call_tool(fn: dict) -> dict:
+    """Dograh's native end-call tool.
+
+    Hanging up is the orchestrator's to do. Routing this through our HTTP
+    endpoint like the other six would record a disposition and leave the caller
+    sitting on an open line, which is exactly what happened before.
+
+    `endCallReason` makes the model supply a reason; Dograh sets it as the call
+    disposition and tags the call with it, and it arrives here on the webhook as
+    `gathered_context.call_disposition`.
+    """
+    return {
+        "name": fn["name"],
+        "description": fn.get("description", ""),
+        "category": "end_call",
+        "icon": ICONS["end_call"][0],
+        "icon_color": ICONS["end_call"][1],
+        "definition": {
+            "schema_version": 1,
+            "type": "end_call",
+            "config": {
+                # No extra goodbye: the agent's own closing line is the goodbye,
+                # and a second one talks over it.
+                "messageType": "none",
+                "endCallReason": True,
+                "endCallReasonDescription": (
+                    "Why the call is ending: booked, not_interested, "
+                    "callback_requested, wrong_number, or user_requested."
+                ),
+            },
+        },
+    }
+
+
 def build_tool(schema: dict) -> dict:
     """One CreateToolRequest body, from one of our tool schemas."""
     fn = schema["function"]
     name = fn["name"]
+
+    if name == "end_call":
+        return build_end_call_tool(fn)
     params = fn.get("parameters") or {}
     props = params.get("properties") or {}
     required = set(params.get("required") or [])
@@ -144,6 +190,10 @@ def webhook_hint() -> dict:
             "call_status": "{{gathered_context.call_status}}",
             "recording_url": "{{recording_url}}",
             "transcript_url": "{{transcript_url}}",
+            # The orchestrator's own trace of the same call. The manager view
+            # links to it, so a reviewer can go from our grade to Dograh's
+            # turn-by-turn record without hunting for the run.
+            "trace_url": "{{gathered_context.trace_url}}",
         },
     }
 
@@ -175,6 +225,15 @@ async def apply(client: httpx.AsyncClient, bodies: list[dict]) -> int:
             else:
                 response = await client.post("/api/v1/tools/", json=body)
                 verb = "created"
+
+            # A tool that changes category - http_api to end_call, say - may be
+            # refused as an update. Replacing it is the only way through, and
+            # it has to be re-attached to the node afterwards.
+            if response.status_code >= 400 and uuid:
+                await client.delete(f"/api/v1/tools/{uuid}")
+                response = await client.post("/api/v1/tools/", json=body)
+                verb = "replaced (re-attach it to the node)"
+
             if response.status_code >= 400:
                 line(BAD, name, f"{response.status_code}: {response.text[:200]}")
                 failed += 1
@@ -184,6 +243,85 @@ async def apply(client: httpx.AsyncClient, bodies: list[dict]) -> int:
             line(BAD, name, str(exc)[:200])
             failed += 1
     return failed
+
+
+PROMPT_NODE_TYPES = ("startCall", "agentNode")
+
+
+async def attach_all(client: httpx.AsyncClient, publish: bool) -> int:
+    """Point the conversation node at every tool, by name.
+
+    Tools are matched by name rather than by remembering uuids, because a tool
+    that changes category has to be deleted and recreated and comes back with a
+    different one. Re-deriving the list is what keeps the node correct through
+    that.
+    """
+    rows = (await client.get("/api/v1/tools/")).json()
+    rows = rows if isinstance(rows, list) else rows.get("items", [])
+    by_name = {
+        r["name"]: (r.get("uuid") or r.get("tool_uuid"))
+        for r in rows
+        if r.get("name")
+    }
+    wanted = [t["function"]["name"] for t in TOOL_SCHEMAS]
+    uuids = [by_name[n] for n in wanted if n in by_name]
+
+    missing = [n for n in wanted if n not in by_name]
+    if missing:
+        line(BAD, "attach", f"not in Dograh yet: {', '.join(missing)}")
+        return 1
+
+    listed = (await client.get("/api/v1/workflow/fetch")).json()
+    listed = listed if isinstance(listed, list) else listed.get("items", [])
+    workflow_id = next(
+        (
+            w.get("id") or w.get("workflow_id")
+            for w in listed
+            for f in ("workflow_uuid", "uuid", "agent_uuid")
+            if str(w.get(f) or "") == settings.dograh_workflow_uuid
+        ),
+        None,
+    )
+    if workflow_id is None:
+        line(BAD, "attach", f"workflow {settings.dograh_workflow_uuid} not found")
+        return 1
+
+    workflow = (await client.get(f"/api/v1/workflow/fetch/{workflow_id}")).json()
+    definition = (
+        workflow.get("workflow_definition")
+        or workflow.get("definition")
+        or workflow.get("workflow_json")
+    )
+    nodes = [n for n in (definition or {}).get("nodes", [])
+             if n.get("type") in PROMPT_NODE_TYPES]
+    if not nodes:
+        line(BAD, "attach", "no conversation node in the workflow")
+        return 1
+
+    for node in nodes:
+        node.setdefault("data", {})["tool_uuids"] = uuids
+        line(OK, f"attached to '{node['data'].get('name', node.get('id'))}'",
+             f"{len(uuids)} tools")
+
+    response = await client.put(
+        f"/api/v1/workflow/{workflow_id}", json={"workflow_definition": definition}
+    )
+    if response.status_code >= 400:
+        line(BAD, "save draft", f"{response.status_code}: {response.text[:200]}")
+        return 1
+    line(OK, "draft saved")
+
+    if not publish:
+        print()
+        print("Draft only. A real call runs the PUBLISHED version - add --publish.")
+        return 0
+
+    response = await client.post(f"/api/v1/workflow/{workflow_id}/publish")
+    if response.status_code >= 400:
+        line(BAD, "publish", f"{response.status_code}: {response.text[:200]}")
+        return 1
+    line(OK, "published", "real calls now run this version")
+    return 0
 
 
 async def main() -> int:
@@ -210,8 +348,12 @@ async def main() -> int:
         print("Dry run. These seven tools would be created:\n")
         for body in bodies:
             d = body["definition"]["config"]
+            print(f"  {body['name']}  [{body['category']}]")
+            if body["category"] == "end_call":
+                print("      Dograh hangs the call up itself; the reason becomes")
+                print("      the call disposition and reaches us on the webhook.")
+                continue
             names = [p["name"] for p in d["parameters"]]
-            print(f"  {body['name']}")
             print(f"      POST {d['url']}")
             print(f"      params  : {', '.join(names) or '(none)'}")
             print(f"      preset  : broker_call_id <- {{{{initial_context.broker_call_id}}}}")
@@ -236,6 +378,9 @@ async def main() -> int:
         },
     ) as client:
         failed = await apply(client, bodies)
+        if not failed and "--attach" in sys.argv:
+            print()
+            failed += await attach_all(client, publish="--publish" in sys.argv)
 
     print()
     if failed:

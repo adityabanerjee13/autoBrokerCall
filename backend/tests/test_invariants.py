@@ -20,12 +20,76 @@ def sources(root: Path) -> list[Path]:
     return sorted(root.rglob("*.py"))
 
 
-def test_no_api_route_touches_lead_memory():
-    offenders = [p for p in sources(API) if "lead_memory" in p.read_text(encoding="utf-8")]
+# The manager audit view is the one HTTP surface allowed to read memory: a
+# memory entry steers the *next* call, so an unreviewable memory is an
+# unreviewable agent. Everything else stays sealed.
+MEMORY_READER = "manager.py"
+
+
+def test_lead_memory_is_unreachable_from_every_lead_facing_surface():
+    """Memory is agent-private everywhere a lead or an owner can see.
+
+    This used to forbid `lead_memory` in all of api/. It now permits exactly
+    one reader - the manager's call audit - because a grade you cannot audit is
+    not worth much. The property that ever mattered is unchanged: nothing a
+    renter or an owner can reach, and nothing the orchestrator can reach, may
+    read it.
+    """
+    offenders = [
+        p
+        for p in sources(API)
+        if "lead_memory" in p.read_text(encoding="utf-8") and p.name != MEMORY_READER
+    ]
     assert not offenders, (
-        "lead_memory is agent-private and must not be reachable over HTTP: "
+        "lead_memory is readable only from the manager audit route: "
         f"{[str(p.relative_to(BACKEND_ROOT)) for p in offenders]}"
     )
+
+
+def test_the_manager_reads_only_the_memory_this_call_wrote():
+    """Auditing one call must not dump the lead's whole memory block.
+
+    The entries are filtered on `call_id`, so the view shows the durable
+    consequence of the conversation being reviewed rather than everything the
+    agent has ever known about that person.
+    """
+    source = (API / MEMORY_READER).read_text(encoding="utf-8")
+    assert 'e.get("call_id") == call_id' in source, (
+        "the manager audit must filter memory entries to the call under review"
+    )
+    assert "memory_block" not in source, (
+        "the composed memory block is the agent's prompt material, not a "
+        "dashboard field"
+    )
+
+
+def test_the_owner_never_learns_who_was_interested():
+    """An owner sees that interest exists, never whose.
+
+    `client.py` builds its payloads field by field for exactly this reason. The
+    notifications feed is the easiest place to undo that by accident, so it is
+    pinned here: it may not read a renter document at all.
+    """
+    import ast
+
+    source = (API / "client.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+
+    notifications = next(
+        (
+            n
+            for n in tree.body
+            if isinstance(n, (ast.AsyncFunctionDef, ast.FunctionDef))
+            and n.name == "notifications"
+        ),
+        None,
+    )
+    assert notifications is not None, "the notifications route is missing"
+
+    body = ast.dump(notifications)
+    for leak in ("first_name", "last_name", "phone", "email", "monthly_rent_min",
+                 "monthly_rent_max", "transcript", "lead_memory"):
+        assert leak not in body, f"owner notifications must not touch {leak}"
 
 
 def test_only_azure_client_constructs_a_model_client():

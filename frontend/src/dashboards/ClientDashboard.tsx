@@ -1,6 +1,11 @@
 import { useEffect, useState } from "react";
-import { useClientDashboard, useLenders } from "../api/hooks";
-import { absolute, rentPerMonth } from "../components/format";
+import {
+  useClientDashboard,
+  useLenders,
+  useOwnerNotifications,
+} from "../api/hooks";
+import type { OwnerNotification } from "../api/types";
+import { absolute, rentPerMonth, when } from "../components/format";
 import { PropertyStatusPill } from "../components/Pills";
 
 // This page shows an owner their own listings. It deliberately renders no
@@ -24,6 +29,7 @@ export default function ClientDashboard() {
   }, [ownerId]);
 
   const { data, isLoading } = useClientDashboard(ownerId);
+  const { data: notifications } = useOwnerNotifications(ownerId);
   const interestFor = (pid: string) =>
     data?.interest.find((i) => i.property_id === pid);
 
@@ -51,6 +57,8 @@ export default function ClientDashboard() {
           </select>
         </label>
       </div>
+
+      <ActivityFeed events={notifications ?? []} />
 
       <section className="panel">
         <div className="panel-head">
@@ -133,6 +141,54 @@ export default function ClientDashboard() {
         )}
       </section>
     </div>
+  );
+}
+
+function ActivityFeed({ events }: { events: OwnerNotification[] }) {
+  return (
+    <section className="panel">
+      <div className="panel-head">
+        <h2 className="panel-title">Activity</h2>
+        <span className="text-xs text-slate-400">
+          {events.length ? `${events.length} recent` : "nothing yet"}
+        </span>
+      </div>
+      {!events.length ? (
+        <p className="empty">
+          Nothing has happened on your listings yet. You will see it here the
+          moment a property is shown.
+        </p>
+      ) : (
+        <ul className="divide-y divide-slate-100">
+          {events.map((e, i) => (
+            <li
+              key={`${e.property_id}-${e.event}-${i}`}
+              className="flex flex-wrap items-start justify-between gap-2 px-4 py-3"
+            >
+              <div className="min-w-0">
+                <div className="flex items-center gap-2">
+                  <span
+                    className={`pill ${
+                      e.event === "viewing_booked"
+                        ? "bg-human/15 text-human"
+                        : "bg-agent/10 text-agent"
+                    }`}
+                  >
+                    {e.event === "viewing_booked" ? "viewing booked" : "shown"}
+                  </span>
+                  <span className="font-mono text-[11px] text-slate-400">
+                    {e.property_id}
+                  </span>
+                </div>
+                <p className="mt-1 text-sm text-slate-700">{e.detail}</p>
+                <p className="text-xs text-slate-400">{e.address}</p>
+              </div>
+              <time className="shrink-0 text-xs text-slate-500">{when(e.at)}</time>
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
   );
 }
 

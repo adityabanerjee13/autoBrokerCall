@@ -9,6 +9,8 @@ import type {
   ActiveCall,
   AnalysisRow,
   CallDetail,
+  CallTrace,
+  OwnerNotification,
   ClientDashboard,
   CompletedCall,
   LeadRow,
@@ -115,3 +117,23 @@ export function useCreateLead() {
     },
   });
 }
+
+// The manager drill-down. One request carries the transcript with its timing
+// signals, every tool call, both analysis tracks and what went into memory -
+// so the panel never shows half a picture while the rest is still loading.
+export const useCallTrace = (callId: string | null): UseQueryResult<CallTrace> =>
+  useQuery({
+    queryKey: ["trace", callId],
+    queryFn: () => api.get<CallTrace>(`/api/manager/calls/${callId}/trace`),
+    enabled: Boolean(callId),
+  });
+
+export const useOwnerNotifications = (
+  leadId: string | null,
+): UseQueryResult<OwnerNotification[]> =>
+  useQuery({
+    queryKey: ["owner-notifications", leadId],
+    queryFn: () => api.get<OwnerNotification[]>(`/api/client/${leadId}/notifications`),
+    enabled: Boolean(leadId),
+    refetchInterval: 10000,
+  });

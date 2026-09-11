@@ -338,6 +338,114 @@ class AnalysisRow(BaseModel):
     escalated: bool
 
 
+class TurnSignal(BaseModel):
+    """One transcript turn, with the arithmetic that explains it.
+
+    `gap_ms` is the silence before this turn. It is only the agent being slow
+    when the turn before it was the lead's - a pause after the agent speaks is
+    a person thinking.
+    """
+
+    idx: int
+    role: str
+    text: str
+    at_ms: int
+    speaking_ms: int
+    gap_ms: int | None = None
+    is_agent_latency: bool = False
+    dead_air: bool = False
+    # Set when the safety judge quoted this turn, so the manager sees the
+    # verdict against the words that earned it rather than in the abstract.
+    flagged: bool = False
+    flag_reason: str | None = None
+    # The verbatim handoff line, when this call escalated.
+    is_handoff: bool = False
+
+
+class ToolTrace(BaseModel):
+    """One tool the agent asked for, and what the guardrail decided."""
+
+    name: str
+    args: dict[str, Any] = Field(default_factory=dict)
+    allowed: bool
+    reason: str | None = None
+    at_ms: int = 0
+
+
+class MemoryEntryView(BaseModel):
+    """One thing this call chose to remember.
+
+    Reachable only from the manager audit route. `lead_memory` remains
+    unreadable from every lead-facing surface - see the invariant tests.
+    """
+
+    kind: str
+    text: str
+    created_at: datetime | None = None
+
+
+class ProviderTrace(BaseModel):
+    """Where the orchestrator's own record of this call lives."""
+
+    transport: str = "mock"
+    run_id: int | None = None
+    trace_url: str | None = None
+    recording_url: str | None = None
+    disposition: str | None = None
+    call_status: str | None = None
+
+
+class CallTrace(BaseModel):
+    """Everything known about one call, in one response.
+
+    The manager view exists to answer "what actually happened, and can I trust
+    the grade?", so this carries the evidence beside the verdict: the turns and
+    their timing, every tool call with the guardrail's decision, both analysis
+    tracks, what was written to memory, and a link to the orchestrator's trace.
+    """
+
+    call_id: str
+    lead_id: str
+    lead_name: str
+    lead_type: LeadType
+    status: CallStatus
+    started_at: datetime
+    ended_at: datetime | None = None
+    duration_s: int | None = None
+
+    metrics: CallMetrics
+    turns: list[TurnSignal] = Field(default_factory=list)
+    tools: list[ToolTrace] = Field(default_factory=list)
+    analysis: CallAnalysis = Field(default_factory=CallAnalysis)
+
+    escalated: bool = False
+    escalation_reason: EscalationReason | None = None
+    escalated_at: datetime | None = None
+
+    memory_written: list[MemoryEntryView] = Field(default_factory=list)
+    memory_version: int | None = None
+
+    provider: ProviderTrace = Field(default_factory=ProviderTrace)
+    message_id: str | None = None
+
+
+class OwnerNotification(BaseModel):
+    """One thing that happened to an owner's property.
+
+    Deliberately anonymous. The owner learns that interest exists and when -
+    never who, never their budget, never why they passed. That rule is the
+    whole reason the lender policy exists, and a notification feed is the
+    easiest place to break it by accident.
+    """
+
+    event: Literal["shown", "viewing_booked"]
+    property_id: str
+    address: str
+    at: datetime
+    # "a prospective tenant", never a name.
+    detail: str
+
+
 class ManagerStats(BaseModel):
     calls_today: int
     escalation_rate: float

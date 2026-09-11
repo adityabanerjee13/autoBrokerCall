@@ -94,6 +94,8 @@ async def _dial(call_id: str, lead: dict) -> None:
     so there is nothing to grade. The row is closed out and the lead goes back
     in the queue rather than sitting in `ringing` forever.
     """
+    from zoneinfo import ZoneInfo
+
     from app.agent.context import format_properties, lead_digest, match_properties
     from app.agent.finalize import finalize_call
     from app.dograh.client import place_call
@@ -104,7 +106,16 @@ async def _dial(call_id: str, lead: dict) -> None:
     # It leaves this process only as part of the prompt context for one call.
     memory = await read_memory_block(lead["lead_id"]) or ""
 
+    # A model asked to turn "day after tomorrow" into an ISO datetime with no
+    # idea what day it is will invent one, and did: a viewing booked in 2023,
+    # which then never appeared on the owner's dashboard because it had already
+    # passed. Anchor it. IST because every lead and every property is in Gurugram.
+    now_ist = utcnow().astimezone(ZoneInfo("Asia/Kolkata"))
+
     context = {
+        "today": now_ist.strftime("%A, %d %B %Y"),
+        "now_iso": now_ist.isoformat(timespec="seconds"),
+        "timezone": "Asia/Kolkata",
         "lead_id": lead["lead_id"],
         "first_name": lead.get("first_name", ""),
         "last_name": lead.get("last_name", ""),

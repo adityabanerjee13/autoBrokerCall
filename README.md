@@ -1,249 +1,163 @@
 # brokerAgent
 
-A voice agent that calls rental leads in Gurugram, escalates to a human when it
-must, grades every call on two independent axes, and lets a broker send the
-follow-up with one click. Three dashboards — broker, home owner, manager — behind
-one toggle.
+A voice agent that calls rental leads in Gurugram, qualifies them, books
+viewings, and hands off to a human when it must. Every call is graded on two
+independent tracks, its durable facts are compressed into memory for the next
+call, and a follow-up is drafted for a broker to send with one click. Three
+dashboards — broker, home-owner, manager — behind one toggle.
 
-## Run the demo
+**Stack.** [Dograh](https://docs.dograh.com) orchestrates the call over a VoBiz
+line with Azure Speech (`en-IN`) on both ends. Azure OpenAI runs the agent and
+the post-call pipeline. FastAPI + MongoDB on the backend, React on the front.
+
+---
+
+## How to run
 
 Everything runs in Docker. No Python, Node or Mongo needed on the host.
 
 ```bash
 cp backend/.env.example backend/.env
-```
-
-```bash
 docker compose up -d --build
-```
-
-```bash
 docker compose run --rm seed
 ```
 
-Open **http://localhost:5173**. `CALL_TRANSPORT=mock` is the default, so no
-carrier account and no Azure Speech resource are required - the lead's side is
-replayed from `seed/scripts`, and everything on the agent's side is real.
+Open **http://localhost:5173**. With `CALL_TRANSPORT=mock` (the default) the
+lead's side is replayed from `backend/seed/scripts`, so no Dograh account is
+needed — everything on the agent's side is real.
 
 | Command | What it does |
 |---|---|
-| `docker compose up -d --build` | mongo + api + web, with healthchecks and ordering |
-| `docker compose run --rm seed` | populate the five collections (safe to re-run) |
-| `docker compose run --rm test` | the 30-test suite, inside the container |
+| `docker compose run --rm test` | 83-test suite, including the architectural invariants |
 | `docker compose run --rm check-azure` | verify the three model deployments |
-| `docker compose run --rm check-voice` | verify Azure Speech, and write a sample to listen to |
-| `docker compose run --rm check-vobiz +91XXXXXXXXXX` | verify the carrier, then optionally dial |
-| `docker compose logs -f api` | backend logs |
-| `docker compose down` | stop (add `-v` to drop the database too) |
+| `docker compose run --rm check-dograh` | verify the Dograh key, workflow, telephony and tool reachability |
+| `docker compose run --rm provision-dograh --apply --attach --publish` | create the seven tools in Dograh and attach them |
+| `docker compose run --rm apply-prompt --apply --publish` | push `config/dograh_prompt.txt` and publish |
+| `docker compose run --rm apply-models --apply` | pin Dograh's LLM/TTS/STT to what the call needs |
 
-Three services: `mongo:7`, `brokeragent-api` (437MB) and `brokeragent-web`
-(74MB — nginx serving the built SPA).
+**Real calls.** Fill in `DOGRAH_API_KEY`, `DOGRAH_WORKFLOW_UUID`,
+`DOGRAH_SHARED_SECRET` and a public `PUBLIC_BASE_URL` (Dograh calls back into
+this app; a Cloudflare tunnel works), set `CALL_TRANSPORT=dograh`, and run
+`check-dograh` until all checks pass. VoBiz and Azure Speech are configured
+inside Dograh, not here. **Call now** on the broker dashboard then dials.
 
-**The frontend is same-origin with the API.** nginx proxies `/api` to the api
-container, so `VITE_API_BASE` is empty in the image, there is no CORS in the
-container path, and the image is not tied to a particular backend hostname. That
-proxy also carries the websocket upgrade, which is what the VoBiz media stream
-needs. Port 8000 is published as well, but only for poking the API directly.
+---
 
-### Running it without Docker
+## What is covered
 
-Still supported, and what you want if you are editing the frontend and need HMR:
+### Voice agent (Dograh)
 
-```bash
-cd backend && python -m venv .venv && .venv/Scripts/pip install -r requirements.txt
-.venv/Scripts/python -m uvicorn app.main:app --port 8000
-```
+**Integration over HTTP.** Dograh owns the call — carrier, speech, turn-taking
+— and this app owns the domain. The seam is three HTTP surfaces:
 
-```bash
-cd frontend && npm install && npm run dev
-```
+- `POST /api/v1/public/agent/workflow/{uuid}` — this app hands a call to Dograh
+  with `initial_context`: the lead digest, matched properties, the memory block,
+  today's date in IST, and a `broker_call_id` that threads everything back.
+- `POST /api/dograh/tools/{name}` — Dograh calls back into this app for every
+  tool the agent uses. **The guardrail still runs here**: Dograh proposes, this
+  app decides, and a refusal returns as words the agent can recover from.
+- `POST /api/dograh/webhook` — fired when the run completes; this app fetches
+  the transcript and starts the post-call pipeline.
 
-The dev server needs `frontend/.env` to contain
-`VITE_API_BASE=http://localhost:8000`, since it has no nginx in front of it.
-Nothing may listen on 5173 or 8000 on the host while the containers hold those
-ports — if the page shows `@vite/client` in its HTML, you are looking at the dev
-server, not the container.
+All three are authenticated with a shared secret. A tool call that fails the
+check is refused, and a webhook retry for a call already graded is ignored.
 
-## Azure AI Foundry setup
+**Seven tools.** `capture_field`, `search_properties`, `present_property`,
+`book_appointment`, `note_memory`, `escalate_to_human`, `end_call`. There is
+deliberately no tool for payments, loans, advice or messaging, and none that
+can move a property back to `available` — an invariant test fails the build if
+one appears. `provision-dograh` creates them in Dograh from the same schemas
+the scripted runner uses, so the two cannot drift.
 
-Three deployments, on a resource in **swedencentral**. Verify any setup with:
+**The `end_call` modification.** Six tools are HTTP tools; `end_call` is not.
+An HTTP tool that says "the call is over" is just an HTTP request — the line
+stays open, which is exactly what happened. It is provisioned as Dograh's
+*native* end-call tool instead, with `endCallReason` on, so the model's reason
+becomes the call disposition and reaches this app on the webhook.
 
-```bash
-cd backend && .venv/Scripts/python scripts/check_azure.py
-```
+**Azure AI.** Four LLM roles. LLM-1 (the conversation) runs inside Dograh on
+Azure OpenAI; LLM-2a/2b (grading), LLM-2c (memory) and LLM-3 (follow-up) run
+here through `llm/azure_client.py`, the only module that constructs a client.
+On Azure the model field is the *deployment name* (`gpt-4o-broker`), not the
+model name — `apply-models` pins it and proves the deployment answers before
+saving, because Dograh's form reverts it.
 
-It runs what the app runs — a completion, a tool call, and a strict
-`json_schema` call on each of the analyzer and composer deployments — and
-reports per-deployment rather than failing on the first error.
+### Analysis
 
-| `.env` key | Deployment | Model | SKU | TPM |
-|---|---|---|---|---|
-| `AZURE_DEPLOYMENT_AGENT` | `gpt-4o-broker` | gpt-4o `2024-11-20` | Standard | 30K |
-| `AZURE_DEPLOYMENT_ANALYZER` | `gpt-4o-analyzer` | gpt-4o `2024-11-20` | Standard | 20K |
-| `AZURE_DEPLOYMENT_COMPOSER` | `gpt-41-mini-composer` | gpt-4.1-mini `2025-04-14` | GlobalStandard | 50K |
+Two judges, run separately on the transcript, reported side by side and
+**never blended** — a call that books a viewing and breaks the law would
+otherwise average out to "fine". Neither is shown the other's output.
 
-Three things that are easy to get wrong:
+**Conversion rubric (LLM-2a)** grades commercial effectiveness only:
+`fields_captured` / `fields_missing` against the required fields for the lead
+type (a field counts only if stated on this call or already on file);
+`next_step_secured`, true only for a specific dated commitment;
+`objection_handling` scored 1–5 (3 when no objection was raised — never invent
+one); `lead_temperature` hot/warm/cold; a `proposed_status`; and a
+`track_score` weighted 0.4 completeness, 0.35 next step, 0.25 objections.
 
-- **`GlobalStandard` is not the default answer.** Quota is allocated per SKU
-  *and* per region. This subscription has zero gpt-4o quota on GlobalStandard
-  everywhere, and 50K on regional `Standard` in swedencentral and eastus2.
-  Check with `az cognitiveservices usage list --location <region>` before
-  deploying; an `InsufficientQuota` error is quota, not access.
-- **`gpt-4o-mini` is retired** for new deployments (since 2026-03-31), and it
-  only ever shipped one version. The model catalogue still lists it as live
-  until 2027 — the catalogue and the deployment gate disagree, and the gate
-  wins. `gpt-4.1-mini` replaces it here.
-- **Structured output needs gpt-4o `2024-08-06` or later.** The analyzer and
-  composer use `strict: true` schemas; an older gpt-4o will fail those two
-  while the agent keeps working.
+**Safety rubric (LLM-2b)** grades conduct only, and judges what the *agent*
+said. Ten rules: `escalation_missed`, `escalation_explained`,
+`handoff_altered`, `spoke_after_handoff`, `unverified_claim`,
+`discrimination_entertained`, `cash_or_payment`, `out_of_scope_advice`,
+`pressure`, `privacy_leak`. Each violation cites the turn and a verbatim quote.
+Listing attributes quoted accurately are not claims; prose facts absent from
+VERIFIED FACTS are. Verdict is `pass`, `warn` or `fail`, plus an escalation
+judgement (`should_have`, `did`, `miss_type`).
 
-```bash
-docker compose run --rm check-voice
-```
+**The gate is literal.** `safety.verdict == "fail"` forces the lead to
+`Escalated` regardless of the conversion score. Metrics — talk ratio, latency,
+dead air, turn count — are arithmetic from timestamps, never asked of a model.
 
-That issues a token, confirms `AZURE_SPEECH_VOICE` actually exists in
-`AZURE_SPEECH_REGION`, and writes a synthesised sample to your temp directory
-so you can hear the voice rather than trust a byte count. A wrong voice name is
-otherwise a 400 on every turn with a vague message.
+### Memory compression
 
-**There is no fallback voice, by design.** A phone line has no speech engine of
-its own, so an unconfigured `AZURE_SPEECH_KEY` is a call that connects to
-silence. `synthesize()` raises rather than returning empty audio, and the
-startup log warns when `CALL_TRANSPORT=vobiz` is set without a speech key. Run
-`check-voice` before you need it, not after.
+**What the compactor does.** LLM-2c is the *only* writer of `lead_memory`. It
+runs after a call, never during one, and rewrites the lead's whole memory block
+from the previous block plus what the latest call established — durable facts
+only: preferences, constraints, rejection reasons, who else decides, how they
+like to be spoken to, commitments, sensitivities. Duplicates merge; anything
+the latest call contradicts is dropped. It never records religion, caste,
+community, marital status, food habits, region, payment details, or anything
+said during an escalation. Hard cap 1200 tokens; over that it asks for a merge
+rather than truncating, and on repeated failure keeps the previous version.
 
-## Telephony: VoBiz
+**How it helps the next call.** The block is injected verbatim into the agent's
+prompt as "what earlier calls established", so the agent opens as a follow-up
+rather than re-qualifying from scratch, doesn't re-ask what is known, and
+avoids what the person has already rejected. The manager drill-down shows what
+each call wrote, because a memory entry is what steers the next call — an
+unreviewable memory is an unreviewable agent.
 
-[VoBiz](https://vobiz.ai/docs) dials the lead. Two modules know it exists:
-`telephony/vobiz.py` holds the credentials and the wire format, and
-`api/vobiz.py` is the only surface the carrier can reach.
+**What could be added at this stage.** Per-fact confidence and provenance
+(which turn a fact came from), so a contradicted fact decays instead of being
+dropped outright; a staleness horizon, so a budget stated six months ago is
+re-confirmed rather than trusted; a diff between versions surfaced to the
+manager; and a signal for facts the agent *used* on the next call versus facts
+that sat unused, which would tell you what is worth remembering at all.
 
-The carrier drives the call by calling us:
+### Outbound
 
-```
-POST /Account/{auth_id}/Call/   ->  request_uuid          (queued, not answered)
-        |
-        v
-  answer_url    -> we return <Stream> XML  -> wss://…/api/vobiz/media/{call_id}
-  ring_url      -> logged
-  machine_url   -> voicemail? <Hangup/>
-  hangup_url    -> the authoritative end of the call
-```
+**Purpose.** LLM-3 drafts the follow-up — a WhatsApp body and an email — from
+the graded call, in Gurugram local time, at status `draft`. It has no send
+capability and never will. `outbound/send.py` is the only code path that sends,
+it is reached only by a person clicking **Send follow-up** after reading the
+draft, and its status filter makes a double-click send exactly once. Drafting
+and sending are separated so that no model can put a message in front of a
+customer on its own.
 
-Everything between the two audio directions is Azure Speech and
-`agent/session.py`:
-
-```
-caller audio -> Azure STT -> CallSession.lead_turn() -> Azure TTS -> caller
-```
-
-`agent/session.py` owns no transport, which is what lets the scripted runner
-walk the same ground with nobody on the line - so a scripted call and a real
-one produce the same documents and are graded the same way.
-
-### Turning it on
-
-Build the api image with the Speech SDK, since a dialled call has to hear:
-
-```bash
-WITH_TELEPHONY=true docker compose up -d --build
-```
-
-Fill in `AZURE_SPEECH_KEY`, the three `VOBIZ_*` settings and `PUBLIC_BASE_URL`,
-set `CALL_TRANSPORT=vobiz`, then verify before dialling a real person:
-
-```bash
-docker compose run --rm check-vobiz +91XXXXXXXXXX
-```
-
-That checks the credentials, fetches `/api/health` back through
-`PUBLIC_BASE_URL` from the outside, fetches the answer webhook and parses the
-XML, confirms an *unsigned* webhook is refused, and synthesises a sample at the
-phone line's format. Only then, and only if a number was passed, does it dial.
-
-**All four VoBiz settings are required, and a missing one replays a script
-instead.** `settings.transport` resolves `vobiz` to `mock` unless the auth id,
-auth token, from-number and `PUBLIC_BASE_URL` are all present, and logs a
-warning at startup saying so. Dialling a real person and then having nothing
-answer is worse than not dialling.
-
-**Point the tunnel at port 5173, not 8000.** nginx proxies `/api` including the
-websocket upgrade, so the whole carrier path works through the web container.
-Whenever the tunnel restarts its hostname changes, and a stale
-`PUBLIC_BASE_URL` is a call that connects to silence. After changing it:
-`docker compose up -d --force-recreate api`.
-
-ngrok needs an account; Cloudflare quick tunnels do not:
-
-```bash
-cloudflared tunnel --url http://localhost:5173
-```
-
-### Things that are load-bearing on a real call
-
-**The webhooks are signed.** They are on the public internet and they end live
-calls, so every callback URL carries an HMAC over the `call_id` and every route
-checks it — including the media socket, which rejects the upgrade rather than
-accepting and then failing.
-`tests/test_invariants.py::test_every_carrier_webhook_checks_its_signature`
-parses the module and fails the build if a route stops checking.
-
-**Nothing speaks before the stream.** The answer XML has no `<Speak>`: a
-carrier greeting would be a different voice from every line after it, so the
-greeting comes out of Azure through the same socket as the rest of the call.
-
-**`keepCallAlive="true"` is not optional.** Without it the carrier runs the
-next element the moment the stream is set up and hangs up before anyone has
-said anything.
-
-**The agent stops talking when the caller starts.** Playback is sent in 200ms
-chunks and abandoned mid-line on barge-in, and `clearAudio` flushes what the
-carrier has already buffered. An agent that talks over an interruption is worse
-than one that is slow.
-
-**A voicemail is not a lead.** VoBiz's machine detection posts to
-`/api/vobiz/machine`; a detected machine gets `<Hangup/>` and the lead goes
-back in the queue rather than being pitched to.
-
-**The socket closing is not the call ending.** With `keepCallAlive` the line
-stays up until someone hangs up, so the runner calls `vobiz.hangup()` in its
-`finally` rather than assuming the carrier noticed.
+---
 
 ## Layout
 
 ```
 backend/app/
-  agent/      context, tools, guardrail, escalation, session, mock_runner,
-              vobiz_runner, finalize
-  analysis/   metrics (deterministic), analyzer (LLM-2a/2b), schemas, rubrics/
+  agent/      context, tools, guardrail, escalation, turn, mock_runner, finalize
+  analysis/   metrics (deterministic), analyzer (LLM-2a/2b), rubrics/
   memory/     reader (prompt-time), compactor (LLM-2c, the only writer)
-  outbound/   composer (LLM-3, drafts only), send (the button), whatsapp, email
-  voice/      azure_speech — the only speech engine in the codebase
-  telephony/  vobiz — the only carrier in the codebase
-  api/        calls, vobiz, broker, client, manager, messages
-  llm/        azure_client — the only model client in the codebase
-backend/Dockerfile               api image; WITH_TELEPHONY=true adds the Speech SDK
-backend/scripts/                 check_azure.py, check_voice.py, check_vobiz.py
-frontend/Dockerfile              node build -> nginx, serves the SPA and proxies /api
-docker-compose.yml               mongo + api + web, plus seed/test/check one-shots
-frontend/src/
-  api/        client, types (mirrors the DTOs), hooks (one per endpoint)
-  components/ RoleToggle, LeadQueue, ActiveCallPanel, CompletedCalls, CallDrawer
-  dashboards/ Broker, Client, Manager
+  outbound/   composer (LLM-3, drafts only), send (the button)
+  dograh/     client — the only module holding a Dograh credential
+  api/        calls, dograh, broker, client, manager, messages
+  llm/        azure_client — the only model client
+backend/scripts/   check_dograh, provision_dograh, apply_dograh_prompt, apply_dograh_models
+frontend/src/      dashboards/ Broker, Client, Manager · components/CallDrawer (the audit view)
 ```
-
-## Known deviations from the handoff spec
-
-- **Retry.** The spec's `send.py` filters on `status: "draft"` alone, which would
-  make the "Retry" button on a `partial`/`failed` row 409 forever. The filter here
-  is `{"$in": ["draft", "partial", "failed"]}` — a second click during a send
-  still lands on `"sending"` and is refused, so double-click safety is unchanged.
-- **Seed consistency.** The spec asks for six `Queued` renters *and* a completed
-  call with `safety.verdict = "fail"`. Since the gate forces `Escalated` on a
-  safety failure, that call's lead (Meera Raghavan) is seeded as `Escalated` and
-  a seventh queued renter was added, so the queue still shows six.
-- **`present_property` does not change `properties.status`.** Keeping it
-  `available` is what lets a viewing be booked against a property that was just
-  presented, and it keeps guardrail rule 4 literally `status != "available"`.
-- **Offline fallbacks.** Described above; they exist so the demo runs before any
-  Azure deployment is provisioned.

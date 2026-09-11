@@ -212,6 +212,17 @@ async def webhook(
     duration_s = _duration_seconds(payload)
     recording_url = payload.get("recording_url")
 
+    # Where Dograh's own record of this call lives. Stored so the manager view
+    # can link out to it; an unrendered Jinja placeholder is not a URL.
+    provider_fields = {
+        "provider_trace_url": _clean(payload.get("trace_url") or gathered.get("trace_url")),
+        "provider_disposition": _clean(payload.get("call_disposition")),
+        "provider_call_status": _clean(payload.get("call_status")),
+    }
+    provider_fields = {k: v for k, v in provider_fields.items() if v}
+    if provider_fields:
+        await db.calls.update_one({"call_id": call_id}, {"$set": provider_fields})
+
     turns = await _ingest_transcript(call_id, payload.get("transcript_url") or "")
 
     # The detector is a backstop here, not the primary gate. Dograh owns turn
@@ -239,6 +250,18 @@ async def webhook(
     )
     log.info("dograh run %s finalized %s (%s turns, %ss)", run_id, call_id, len(turns), duration_s)
     return {"status": "ok"}
+
+
+def _clean(value: object) -> str | None:
+    """Drop a template placeholder that never got rendered.
+
+    `{{gathered_context.trace_url}}` arriving verbatim means the key was absent,
+    and storing it would put a broken link on the manager dashboard.
+    """
+    text = str(value or "").strip()
+    if not text or text.startswith("{{"):
+        return None
+    return text
 
 
 def _duration_seconds(payload: dict) -> int:

@@ -172,6 +172,57 @@ async def check_telephony() -> bool:
     return True
 
 
+async def check_llm_deployment() -> bool:
+    """The LLM Dograh will actually call, proven against the Azure resource.
+
+    This has silently broken calls twice. Dograh's Azure form offers exactly
+    one model, `gpt-4.1-mini`, and saves it whenever the form is touched - but
+    on Azure the field must be a *deployment* name, and no deployment here is
+    called that. The symptom is a call that greets, hears the lead, and then
+    says nothing, because every LLM turn 404s.
+    """
+    try:
+        async with httpx.AsyncClient(timeout=20.0, follow_redirects=True) as client:
+            cfg = (await client.get(
+                f"{_base()}/api/v1/organizations/model-configurations/v2",
+                headers=_headers(),
+            )).json()
+        llm = cfg["effective_configuration"]["llm"]
+    except Exception as exc:
+        line(SKIP, "LLM deployment", f"could not read model config: {str(exc)[:120]}")
+        return True
+
+    provider, model = llm.get("provider"), llm.get("model")
+    if provider != "azure":
+        line(OK, "LLM", f"{provider} / {model} (not Azure; not checked here)")
+        return True
+
+    endpoint = settings.azure_openai_endpoint.rstrip("/")
+    url = (f"{endpoint}/openai/deployments/{model}/chat/completions"
+           f"?api-version={settings.azure_openai_api_version}")
+    try:
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            r = await client.post(
+                url,
+                headers={"api-key": settings.azure_openai_api_key},
+                json={"messages": [{"role": "user", "content": "ok"}], "max_tokens": 1},
+            )
+    except Exception as exc:
+        line(BAD, f"LLM deployment '{model}'", str(exc)[:120])
+        return False
+
+    if r.status_code == 200:
+        line(OK, f"LLM deployment '{model}'", "answers")
+        return True
+
+    line(BAD, f"LLM deployment '{model}'", f"Azure returned {r.status_code}")
+    print("        Dograh's LLM model must be an Azure DEPLOYMENT name. Fix with:")
+    print("          docker compose run --rm apply-models --apply")
+    print("        and avoid re-saving the Model Configuration form in the UI -")
+    print("        its dropdown only knows 'gpt-4.1-mini' and will revert this.")
+    return False
+
+
 LOCAL_HOSTS = ("localhost", "127.0.0.1", "host.docker.internal", "0.0.0.0", "::1")
 
 
@@ -309,6 +360,7 @@ async def main() -> int:
         await check_api_key(),
         await check_workflow(),
         await check_telephony(),
+        await check_llm_deployment(),
         await check_dograh_can_reach_us(),
         await check_public_url(),
         await check_tool_endpoint(),

@@ -111,6 +111,18 @@ services:
       MONGO_URI: mongodb://mongo:27017
     entrypoint: ["python", "scripts/apply_dograh_prompt.py"]
 
+  # Pin Dograh's LLM/TTS/STT to what the call needs, and prove the Azure
+  # deployment answers before saving. Dry run by default:
+  #   docker compose run --rm apply-models --apply
+  apply-models:
+    image: brokeragent-api
+    profiles: ["tools"]
+    env_file:
+      - ./backend/.env
+    environment:
+      MONGO_URI: mongodb://mongo:27017
+    entrypoint: ["python", "scripts/apply_dograh_models.py"]
+
   # Dograh: the API key, the workflow, that a telephony configuration exists,
   # and that our own tool endpoint refuses strangers. Pass a number to place a
   # real test call:
